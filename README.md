@@ -5,6 +5,7 @@ night**, waking up on its own at a fixed time.
 
 ```
 coffee      → prevents sleep, and schedules: suspend 23:30 / resume 06:30
+coffee --sleep 22:15 --wake 07:05        # the same, with different times
 chamomile   → restores sleep and removes everything coffee set up
 ```
 
@@ -28,6 +29,8 @@ The 23:30 sleep cannot be a `pmset` event at all: it is requested by a launchd j
 
 ## How it works
 
+With the default times:
+
 ```
 23:30  launchd  →  pmset -a disablesleep 0 ; pmset sleepnow     the machine sleeps
 06:30  RTC      →  pmset repeat wake                            the machine wakes
@@ -35,9 +38,18 @@ The 23:30 sleep cannot be a `pmset` event at all: it is requested by a launchd j
 06:45  launchd  →  pmset -a disablesleep 1                      second chance
 ```
 
-The launchd jobs are wrapped in **time windows** (23:25–23:45, 06:25–12:00): launchd
-re-runs missed jobs at the next wake, so without a window a tick missed at 23:30 could
-put the machine to sleep at noon the next day.
+The times are **parameters**, not constants: `coffee --sleep HH:MM --wake HH:MM`
+renders them into the LaunchDaemon and into the `pmset` wake event, and passes them to
+the tick as arguments. The guard windows are derived from them at every run:
+
+| window | action |
+|---|---|
+| `[sleep−5m … sleep+15m]` | `disablesleep 0` + `sleepnow` |
+| `[wake−5m … wake+120m]` | `disablesleep 1` |
+
+Both windows handle the midnight wrap (`--sleep 23:58` gets `23:53 … 00:13`).
+launchd re-runs missed jobs at the next wake, so without a window a tick missed at
+23:30 could put the machine to sleep at noon the next day.
 
 ## Installation
 
@@ -63,9 +75,20 @@ If anything does not hold, it exits with an error instead of leaving half a stat
 ## Daily use
 
 ```bash
-coffee        # arm everything (idempotent)
-chamomile     # disarm everything and give sleep back (idempotent)
+coffee                                 # arm everything (idempotent)
+coffee --sleep 22:15 --wake 07:05      # change the times
+chamomile                              # disarm everything and give sleep back (idempotent)
 ```
+
+The times are remembered in `state/config`, so a bare `coffee` re-run keeps the last
+ones instead of resetting them to the defaults. Validation:
+
+- format `HH:MM`, `00:00`–`23:59`;
+- `--sleep` and `--wake` must differ and be at least **60 minutes** apart
+  (measured forward from the sleep time);
+- changing the times is allowed while coffee is active: an existing repeating wake that
+  matches either the new or the previous configuration is recognised as ours, anything
+  else is still refused rather than overwritten.
 
 Careful: `chamomile` sets `disablesleep 0`, so with the lid closed the machine goes to
 sleep **immediately**. Run it locally, not over SSH.
@@ -120,7 +143,7 @@ tests/                                      test suite with fakes (no sudo)
 ## Tests
 
 ```bash
-./tests/run.sh        # 38 checks, no sudo, no changes to the real system
+./tests/run.sh        # 71 checks, no sudo, no changes to the real system
 ./tests/run.sh -v     # also prints the output of the failing commands
 ```
 
@@ -133,11 +156,15 @@ What is covered:
 
 - `coffee`: happy path, idempotency, plist rendering and its final paths, the
   `HOME=/var/root` case (what `sudo` actually gives you), a `pmset` that exits `0` while
-  changing nothing, refusal to clobber foreign repeating events, usage errors.
+  changing nothing, refusal to clobber foreign repeating events, usage errors,
+  `--sleep/--wake` propagation into the plist and the `pmset` call, persistence of the
+  times across a bare re-run, changing times while active, the backup interval crossing
+  midnight, and six invalid time combinations.
 - `chamomile`: happy path, idempotency on a clean state, foreign events left alone **but
   sleep still restored**, `--force`, usage errors.
-- `coffee-tick`: the night branch (23:30), the morning branch (06:30), the inclusive
-  12:00 boundary, four times outside any window, and both battery warnings.
+- `coffee-tick`: the night branch, the morning branch, windows derived from custom times,
+  windows crossing midnight (both directions), four times outside any window, and both
+  battery warnings.
 
 That suite found two real bugs while it was being written: a `pmset` that lies (non-root
 `pmset` returns 0 and does nothing) and the `$HOME` change under `sudo`.
@@ -159,8 +186,8 @@ sudo launchctl bootout system/com.roberto.coffee.tick
 
 ## Limitations
 
-- The times are **hardcoded in the plist**: edit `daemon/com.roberto.coffee.tick.plist.in`
-  and re-run `coffee` to change them.
+- The 60-minute minimum between `--sleep` and `--wake` is a sanity check, not a rule of
+  the system: shorter cycles are refused on purpose.
 - The label `com.roberto.coffee.tick` contains a user name: rename it if you mind.
 - The resume is a single RTC `wake` event: it cannot power on a machine that is off.
 - Tested on a single model (MacBook Air M5, macOS 26.7.1). The behaviour of

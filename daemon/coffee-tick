@@ -1,11 +1,12 @@
 #!/bin/bash
 # coffee-tick — run by launchd at the times in the plist.
-# It decides what to do from the current time, inside guard windows:
-# a missed calendar job is re-run at the next wake, so without a window
-# a tick missed at 23:30 could put the machine to sleep at noon.
+# Arguments: $1 = suspend time (HH:MM), $2 = resume time (HH:MM).
+# It decides what to do from the current time, inside guard windows derived from
+# those times: a missed calendar job is re-run at the next wake, so without a window
+# a tick missed at the suspend time could put the machine to sleep at noon.
 #
-#   23:25-23:45  → disablesleep 0 + sleepnow   (night: allow sleep, then sleep)
-#   06:25-12:00  → disablesleep 1              (morning: wake up and stay awake)
+#   [sleep-5m .. sleep+15m]  → disablesleep 0 + sleepnow   (allow sleep, then sleep)
+#   [wake-5m  .. wake+120m]  → disablesleep 1              (wake up and stay awake)
 #
 # Every run also records power source and charge: at night the machine is often
 # on battery, and without that datum the morning after is unreadable.
@@ -13,8 +14,23 @@
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # not $HOME: under sudo it is /var/root
 LOG="$ROOT/logs/tick.log"
-PMSET="${PMSET_BIN:-/usr/bin/pmset}"   # override per i test
+PMSET="${PMSET_BIN:-/usr/bin/pmset}"   # override for tests
 mkdir -p "$ROOT/logs"
+
+SLEEP_AT="${1:-23:30}"
+WAKE_AT="${2:-06:30}"
+
+to_min() { printf '%s' $(( 10#${1%%:*} * 60 + 10#${1##*:} )); }
+
+# in_win NOW START END — handles windows that cross midnight
+in_win() {
+  local n=$1 s=$2 e=$3
+  if [ "$s" -le "$e" ]; then
+    [ "$n" -ge "$s" ] && [ "$n" -le "$e" ]
+  else
+    [ "$n" -ge "$s" ] || [ "$n" -le "$e" ]
+  fi
+}
 
 # --- power state (pmset -g batt, output is not localised) ---
 batt_src=$("$PMSET" -g batt | sed -n "s/^Now drawing from '\(.*\)'\$/\1/p")
@@ -28,8 +44,8 @@ stamp=$(date '+%Y-%m-%dT%H:%M:%S%z')
 h=$(date +%H); m=$(date +%M)
 now=$((10#$h * 60 + 10#$m))
 
-printf '%s tick %s:%s now=%s disablesleep=%s source=%s charge=%s%%\n' \
-  "$stamp" "$h" "$m" "$now" "$ds" "$batt_src" "$batt_pct" >> "$LOG" 2>&1
+printf '%s tick %s:%s now=%s disablesleep=%s source=%s charge=%s%% sleep=%s wake=%s\n' \
+  "$stamp" "$h" "$m" "$now" "$ds" "$batt_src" "$batt_pct" "$SLEEP_AT" "$WAKE_AT" >> "$LOG" 2>&1
 
 on_batt=0
 [ "$batt_src" = "Battery Power" ] && on_batt=1
@@ -39,13 +55,20 @@ if [ "$on_batt" -eq 1 ] && [ "$batt_pct" != "?" ] && [ "$batt_pct" -lt 30 ]; the
     "$stamp" "$batt_pct" >> "$LOG" 2>&1
 fi
 
-if [ "$now" -ge $((23*60 + 25)) ] && [ "$now" -le $((23*60 + 45)) ]; then
+sleep_from=$(to_min "$SLEEP_AT")
+wake_from=$(to_min "$WAKE_AT")
+sleep_win_s=$(( (sleep_from - 5 + 1440) % 1440 ))
+sleep_win_e=$(( (sleep_from + 15) % 1440 ))
+wake_win_s=$(( (wake_from - 5 + 1440) % 1440 ))
+wake_win_e=$(( (wake_from + 120) % 1440 ))
+
+if in_win "$now" "$sleep_win_s" "$sleep_win_e"; then
   "$PMSET" -a disablesleep 0 >> "$LOG" 2>&1
   "$PMSET" sleepnow          >> "$LOG" 2>&1
   exit 0
 fi
 
-if [ "$now" -ge $((6*60 + 25)) ] && [ "$now" -le $((12*60)) ]; then
+if in_win "$now" "$wake_win_s" "$wake_win_e"; then
   if [ "$on_batt" -eq 1 ]; then
     printf '%s WARN sveglia a batteria (%s%%): ricollega l alimentatore, resta sveglia e consuma\n' \
       "$stamp" "$batt_pct" >> "$LOG" 2>&1

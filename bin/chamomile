@@ -5,9 +5,11 @@
 
 set -uo pipefail
 PROG="$(basename "$0")"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LD="${LAUNCHD_DIR:-/Library/LaunchDaemons}"   # override per i test
 LABEL=com.roberto.coffee.tick
 PLIST_DST="$LD/$LABEL.plist"
+CONFIG="$ROOT/state/config"
 diag() { printf '%s: %s\n' "$PROG" "$*" >&2; }
 
 repeating_raw() {
@@ -19,13 +21,34 @@ repeating_raw() {
 }
 sleep_disabled() { pmset -g | grep -Eq 'SleepDisabled[[:space:]]+1'; }
 job_present() { [ -f "$PLIST_DST" ]; }
+to_min() { printf '%s' $(( 10#${1%%:*} * 60 + 10#${1##*:} )); }
+
+# minutes-of-day of the repeating wake, whatever the 12h/24h rendering is
+wake_repeat_minutes() {
+  repeating_raw | awk '
+    /wake/ {
+      for (i = 1; i <= NF; i++) if ($i == "at") { t = $(i + 1); break }
+      if (t == "") next
+      h = 0; m = 0
+      if (t ~ /[AaPp][Mm]$/) {
+        ap = tolower(substr(t, length(t) - 1, 2))
+        sub(/[AaPp][Mm]$/, "", t)
+        split(t, a, ":"); h = a[1] + 0; m = a[2] + 0
+        if (ap == "pm" && h != 12) h += 12
+        if (ap == "am" && h == 12) h = 0
+      } else {
+        split(t, a, ":"); h = a[1] + 0; m = a[2] + 0
+      }
+      print h * 60 + m; exit
+    }'
+}
 
 usage() {
   cat <<'EOF'
 Uso: chamomile [--force]
 
   Consente lo sleep (disablesleep 0) e rimuove i timer di coffee:
-  il tick di launchd e il wake ripetuto delle 06:30.
+  il tick di launchd e il wake ripetuto (l'orario configurato, default 06:30).
 
   --force  cancella anche eventi ripetuti NON creati da coffee.
            Gli allarmi one-shot com.apple.alarm.* non vengono mai toccati.
@@ -57,9 +80,14 @@ if job_present; then
 fi
 
 # 3) remove the repeating timers (only ours, unless --force)
+OUR_WAKE=06:30
+if [ -f "$CONFIG" ]; then
+  w=$(sed -n 's/^WAKE=//p' "$CONFIG" | head -1)
+  [ -n "$w" ] && OUR_WAKE="$w"
+fi
 foreign=0
 if [ -n "$(repeating_raw)" ]; then
-  if [ "$FORCE" -eq 0 ] && ! repeating_raw | grep -Eqi 'wake.*(6:30 ?am|06:30)'; then
+  if [ "$FORCE" -eq 0 ] && [ "$(wake_repeat_minutes)" != "$(to_min "$OUR_WAKE")" ]; then
     diag "eventi ripetuti presenti ma non sono quelli di coffee: non li cancello."
     repeating_raw | sed 's/^/  /' >&2
     diag "usa --force per rimuoverli comunque"
@@ -69,7 +97,10 @@ if [ -n "$(repeating_raw)" ]; then
   fi
 fi
 
-# 4) verify the effect, not the exit code
+# 4) forget the configured times
+rm -f "$CONFIG"
+
+# 5) verify the effect, not the exit code
 ok=0
 if sleep_disabled; then diag "disablesleep risulta ancora attivo"; ok=1; fi
 [ "$foreign" -eq 0 ] && job_present && { diag "il tick di launchd è ancora installato"; ok=1; }
