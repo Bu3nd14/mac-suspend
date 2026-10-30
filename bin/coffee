@@ -1,7 +1,7 @@
 #!/bin/bash
 # coffee — prevents sleep and sets up the nightly window:
-#   23:30 suspend (launchd tick: disablesleep 0 + sleepnow)
-#   06:30 resume  (pmset repeat wake) + tick that sets disablesleep 1 back
+#   at --sleep: suspend (launchd tick: disablesleep 0 + sleepnow)
+#   at --wake:  resume  (pmset repeat wake) + tick that sets disablesleep 1 back
 #
 # Why a tick is needed: `disablesleep 1` blocks both scheduled sleep and `sleepnow`
 # (error 0xe00002e2). Why `pmset repeat wake` is needed: launchd alone does not wake
@@ -13,11 +13,29 @@ set -uo pipefail
 PROG="$(basename "$0")"
 # derived from the script location: under sudo $HOME becomes /var/root
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LD="${LAUNCHD_DIR:-/Library/LaunchDaemons}"   # override per i test
+LD="${LAUNCHD_DIR:-/Library/LaunchDaemons}"   # override for tests
 LABEL=com.roberto.coffee.tick
 PLIST_SRC="$ROOT/daemon/$LABEL.plist.in"
 PLIST_DST="$LD/$LABEL.plist"
+CONFIG="$ROOT/state/config"
+
+DEFAULT_SLEEP=23:30
+DEFAULT_WAKE=06:30
+BACKUP_AFTER=15          # minutes after the wake: second chance for disablesleep 1
+
+SLEEP="${DEFAULT_SLEEP}"
+WAKE="${DEFAULT_WAKE}"
+OLD_WAKE=""
+
 diag() { printf '%s: %s\n' "$PROG" "$*" >&2; }
+
+to_min() { printf '%s' $(( 10#${1%%:*} * 60 + 10#${1##*:} )); }
+valid_hhmm() {
+  case "$1" in
+    [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 repeating_raw() {
   pmset -g sched | awk '
@@ -27,20 +45,50 @@ repeating_raw() {
   '
 }
 sleep_disabled() { pmset -g | grep -Eq 'SleepDisabled[[:space:]]+1'; }
-wake_armed() {
-  local r; r="$(repeating_raw)"
-  [ -n "$r" ] || return 1
-  printf '%s\n' "$r" | grep -Eqi 'wake.*(6:30 ?am|06:30)'
-}
 job_loaded() { launchctl print "system/$LABEL" >/dev/null 2>&1; }
 
-usage() {
-  cat <<'EOF'
-Uso: coffee
+# minutes-of-day of the repeating wake, whatever the 12h/24h rendering is
+wake_repeat_minutes() {
+  repeating_raw | awk '
+    /wake/ {
+      for (i = 1; i <= NF; i++) if ($i == "at") { t = $(i + 1); break }
+      if (t == "") next
+      h = 0; m = 0
+      if (t ~ /[AaPp][Mm]$/) {
+        ap = tolower(substr(t, length(t) - 1, 2))
+        sub(/[AaPp][Mm]$/, "", t)
+        split(t, a, ":"); h = a[1] + 0; m = a[2] + 0
+        if (ap == "pm" && h != 12) h += 12
+        if (ap == "am" && h == 12) h = 0
+      } else {
+        split(t, a, ":"); h = a[1] + 0; m = a[2] + 0
+      }
+      print h * 60 + m; exit
+    }'
+}
 
-  Impedisce lo sleep (disablesleep 1) e imposta:
-    23:30  suspend  (il tick di launchd toglie disablesleep e dorme)
-    06:30  resume   (wake RTC) + disablesleep 1 ripristinato subito dopo
+# last configured times, so a bare re-run does not silently reset them
+read_config() {
+  [ -f "$CONFIG" ] || return 1
+  local s w
+  s=$(sed -n 's/^SLEEP=//p' "$CONFIG" | head -1)
+  w=$(sed -n 's/^WAKE=//p'  "$CONFIG" | head -1)
+  valid_hhmm "$s" && SLEEP="$s"
+  valid_hhmm "$w" && WAKE="$w"
+  OLD_WAKE="$WAKE"
+  return 0
+}
+
+usage() {
+  cat <<EOF
+Uso: coffee [--sleep HH:MM] [--wake HH:MM]
+
+  Impedisce lo sleep e imposta la finestra notturna:
+    --sleep HH:MM   ora del suspend   (default ${DEFAULT_SLEEP})
+    --wake  HH:MM   ora del resume    (default ${DEFAULT_WAKE})
+
+  Senza argomenti riusa gli ultimi orari configurati, se ci sono.
+  Il resume è un evento RTC; ${BACKUP_AFTER} minuti dopo il tick rimette disablesleep 1.
 
   Fuga manuale:
     sudo pmset -a disablesleep 0 && sudo pmset repeat cancel
@@ -49,55 +97,95 @@ EOF
   exit 0
 }
 
-case "${1:-}" in
-  -h|--help) usage ;;
-  "") ;;
-  *) diag "argomento non riconosciuto: $1"; exit 2 ;;
-esac
+read_config
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage ;;
+    --sleep) shift; [ "$#" -gt 0 ] || { diag "--sleep richiede un orario"; exit 2; }; SLEEP="$1" ;;
+    --wake)  shift; [ "$#" -gt 0 ] || { diag "--wake richiede un orario";  exit 2; }; WAKE="$1" ;;
+    *) diag "argomento non riconosciuto: $1"; exit 2 ;;
+  esac
+  shift
+done
+
+valid_hhmm "$SLEEP" || { diag "orario --sleep non valido: $SLEEP (atteso HH:MM, 00:00-23:59)"; exit 2; }
+valid_hhmm "$WAKE"  || { diag "orario --wake non valido: $WAKE (atteso HH:MM, 00:00-23:59)"; exit 2; }
+[ "$SLEEP" != "$WAKE" ] || { diag "--sleep e --wake non possono coincidere"; exit 2; }
+
+gap=$(( ( $(to_min "$WAKE") - $(to_min "$SLEEP") + 1440 ) % 1440 ))
+[ "$gap" -ge 60 ] || { diag "--wake deve stare almeno 60 minuti dopo --sleep (distanza: ${gap}m)"; exit 2; }
 
 [ -f "$PLIST_SRC" ] || { diag "manca $PLIST_SRC"; exit 1; }
 
-# do not overwrite somebody else's repeating events (only one pair exists)
-if [ -n "$(repeating_raw)" ] && ! wake_armed; then
-  diag "eventi ripetuti già presenti e non sono il wake 06:30 di coffee: non li sovrascrivo."
-  repeating_raw | sed 's/^/  /' >&2
-  diag "rimuovili a mano se vuoi: sudo pmset repeat cancel"
-  exit 1
+# do not overwrite somebody else's repeating events (only one pair exists);
+# a wake matching the previous configuration is ours, so times can be changed
+if [ -n "$(repeating_raw)" ]; then
+  cur=$(wake_repeat_minutes)
+  ours=0
+  [ -n "$cur" ] && [ "$cur" = "$(to_min "$WAKE")" ] && ours=1
+  [ -n "$cur" ] && [ -n "$OLD_WAKE" ] && [ "$cur" = "$(to_min "$OLD_WAKE")" ] && ours=1
+  if [ "$ours" -eq 0 ]; then
+    diag "eventi ripetuti già presenti e non sono il wake di coffee: non li sovrascrivo."
+    repeating_raw | sed 's/^/  /' >&2
+    diag "rimuovili a mano se vuoi: sudo pmset repeat cancel"
+    exit 1
+  fi
 fi
 
 # 1) stay awake (idempotent)
 sudo pmset -a disablesleep 1 || { diag "pmset -a disablesleep 1 è fallito"; exit 1; }
 
-# 2) 06:30 RTC wake: the only thing that actually wakes the machine
-sudo pmset repeat wake MTWRFSU 06:30:00 \
+# 2) the RTC wake: the only thing that actually wakes the machine
+sudo pmset repeat wake MTWRFSU "${WAKE}:00" \
   || { diag "pmset repeat wake è fallito"; exit 1; }
 
-# 3) launchd tick (23:30 sleeps, 06:30/06:45 restore disablesleep)
+# 3) launchd tick (sleeps at --sleep, restores disablesleep at --wake)
 #    migration: remove the job of any previous installation (com.roberto.caffeine.tick)
 if [ -f "$LD/com.roberto.caffeine.tick.plist" ]; then
   sudo launchctl bootout system/com.roberto.caffeine.tick >/dev/null 2>&1 || true
   sudo rm -f "$LD/com.roberto.caffeine.tick.plist"
 fi
 if job_loaded; then sudo launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true; fi
-# the plist is a template: absolute paths are rendered at install time
+
+# the plist is a template: absolute paths and times are rendered at install time
+sh_min=$(printf '%d' "$(( 10#${SLEEP%%:*} ))")
+sm_min=$(printf '%d' "$(( 10#${SLEEP##*:} ))")
+wh_min=$(printf '%d' "$(( 10#${WAKE%%:*} ))")
+wm_min=$(printf '%d' "$(( 10#${WAKE##*:} ))")
+b_total=$(( ( $(to_min "$WAKE") + BACKUP_AFTER ) % 1440 ))
+bh_min=$(printf '%d' "$(( b_total / 60 ))")
+bm_min=$(printf '%d' "$(( b_total % 60 ))")
+
 rendered=$(mktemp -t coffee-plist) || { diag "mktemp fallito"; exit 1; }
 trap 'rm -f "$rendered"' EXIT
-sed "s|@ROOT@|$ROOT|g" "$PLIST_SRC" > "$rendered" || { diag "rendering del plist fallito"; exit 1; }
+sed -e "s|@ROOT@|$ROOT|g" \
+    -e "s|@SLEEP@|$SLEEP|g" -e "s|@WAKE@|$WAKE|g" \
+    -e "s|@SH@|$sh_min|g" -e "s|@SM@|$sm_min|g" \
+    -e "s|@WH@|$wh_min|g" -e "s|@WM@|$wm_min|g" \
+    -e "s|@BH@|$bh_min|g" -e "s|@BM@|$bm_min|g" \
+    "$PLIST_SRC" > "$rendered" || { diag "rendering del plist fallito"; exit 1; }
 /usr/bin/plutil -lint "$rendered" >/dev/null || { diag "plist non valido dopo il rendering"; exit 1; }
 sudo install -m 0644 -o root -g wheel "$rendered" "$PLIST_DST" \
   || { diag "install del plist è fallito"; exit 1; }
 sudo launchctl bootstrap system "$PLIST_DST" \
   || { diag "launchctl bootstrap è fallito"; exit 1; }
 
-# 4) verify the effect, not the exit code
+# 4) verify the effect, not the exit code (pmset run as non-root returns 0)
 ok=0
 sleep_disabled || { diag "disablesleep non risulta attivo"; ok=1; }
-wake_armed     || { diag "il wake 06:30 non risulta pianificato"; ok=1; }
-job_loaded     || { diag "il tick di launchd non risulta caricato"; ok=1; }
+[ "$(wake_repeat_minutes)" = "$(to_min "$WAKE")" ] \
+  || { diag "il wake ${WAKE} non risulta pianificato"; ok=1; }
+job_loaded || { diag "il tick di launchd non risulta caricato"; ok=1; }
 
 if [ "$ok" -ne 0 ]; then
   diag "fuga manuale: sudo pmset -a disablesleep 0 && sudo pmset repeat cancel"
   exit 1
 fi
 
-printf 'coffee: ok — sleep impedito, suspend 23:30, resume 06:30 (+ disablesleep 1 dopo)\n'
+# 5) remember the times for the next bare run
+mkdir -p "$(dirname "$CONFIG")"
+printf 'SLEEP=%s\nWAKE=%s\n' "$SLEEP" "$WAKE" > "$CONFIG" || { diag "config non scritta"; exit 1; }
+
+printf 'coffee: ok — sleep impedito, suspend %s, resume %s (+ disablesleep 1 %dm dopo)\n' \
+  "$SLEEP" "$WAKE" "$BACKUP_AFTER"

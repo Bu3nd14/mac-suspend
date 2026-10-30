@@ -5,19 +5,22 @@
   <key>Label</key>
   <string>com.roberto.coffee.tick</string>
 
+  <!-- The two times are passed as arguments, so the tick derives its guard windows
+       from them instead of hardcoding them here. -->
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
     <string>@ROOT@/daemon/coffee-tick</string>
+    <string>@SLEEP@</string>
+    <string>@WAKE@</string>
   </array>
 
-  <!-- 23:30 releases sleep and sleeps; 06:30 and 06:45 restore it.
-       06:45 is the second chance if the 06:30 job did not run. -->
+  <!-- suspend at --sleep; --wake plus @BH@:@BM@ (the backup) restore disablesleep -->
   <key>StartCalendarInterval</key>
   <array>
-    <dict><key>Hour</key><integer>23</integer><key>Minute</key><integer>30</integer></dict>
-    <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>30</integer></dict>
-    <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Hour</key><integer>@SH@</integer><key>Minute</key><integer>@SM@</integer></dict>
+    <dict><key>Hour</key><integer>@WH@</integer><key>Minute</key><integer>@WM@</integer></dict>
+    <dict><key>Hour</key><integer>@BH@</integer><key>Minute</key><integer>@BM@</integer></dict>
   </array>
 
   <key>RunAtLoad</key>
