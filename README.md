@@ -108,7 +108,33 @@ bin/chamomile                               the reverse command
 daemon/coffee-tick                          run by launchd, with the time windows
 daemon/com.roberto.coffee.tick.plist.in     LaunchDaemon template (@ROOT@ → real path)
 logs/                                       tick log (git-ignored)
+tests/                                      test suite with fakes (no sudo)
 ```
+
+## Tests
+
+```bash
+./tests/run.sh        # 38 checks, no sudo, no changes to the real system
+./tests/run.sh -v     # also prints the output of the failing commands
+```
+
+The suite copies `bin/` and `daemon/` into a temporary root, puts **fake** `pmset`,
+`launchctl`, `sudo`, `install` and `date` on `PATH`, redirects the LaunchDaemons
+directory with `LAUNCHD_DIR`, and the tick's `pmset` with `PMSET_BIN`. Nothing on the
+host is read or modified.
+
+What is covered:
+
+- `coffee`: happy path, idempotency, plist rendering and its final paths, the
+  `HOME=/var/root` case (what `sudo` actually gives you), a `pmset` that exits `0` while
+  changing nothing, refusal to clobber foreign repeating events, usage errors.
+- `chamomile`: happy path, idempotency on a clean state, foreign events left alone **but
+  sleep still restored**, `--force`, usage errors.
+- `coffee-tick`: the night branch (23:30), the morning branch (06:30), the inclusive
+  12:00 boundary, four times outside any window, and both battery warnings.
+
+That suite found two real bugs while it was being written: a `pmset` that lies (non-root
+`pmset` returns 0 and does nothing) and the `$HOME` change under `sudo`.
 
 ## Uninstall
 

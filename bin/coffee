@@ -13,7 +13,7 @@ set -uo pipefail
 PROG="$(basename "$0")"
 # derived from the script location: under sudo $HOME becomes /var/root
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LD=/Library/LaunchDaemons
+LD="${LAUNCHD_DIR:-/Library/LaunchDaemons}"   # override per i test
 LABEL=com.roberto.coffee.tick
 PLIST_SRC="$ROOT/daemon/$LABEL.plist.in"
 PLIST_DST="$LD/$LABEL.plist"

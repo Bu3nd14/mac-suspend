@@ -13,15 +13,16 @@
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # not $HOME: under sudo it is /var/root
 LOG="$ROOT/logs/tick.log"
+PMSET="${PMSET_BIN:-/usr/bin/pmset}"   # override per i test
 mkdir -p "$ROOT/logs"
 
 # --- power state (pmset -g batt, output is not localised) ---
-batt_src=$(/usr/bin/pmset -g batt | sed -n "s/^Now drawing from '\(.*\)'\$/\1/p")
-batt_pct=$(/usr/bin/pmset -g batt | awk '/present: true/ {
+batt_src=$("$PMSET" -g batt | sed -n "s/^Now drawing from '\(.*\)'\$/\1/p")
+batt_pct=$("$PMSET" -g batt | awk '/present: true/ {
   for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+%;?$/) { gsub(/[%;]/, "", $i); print $i; exit } }')
 batt_src=${batt_src:-unknown}
 batt_pct=${batt_pct:-?}
-ds=$(/usr/bin/pmset -g | awk '$1=="SleepDisabled"{print $2}'); ds=${ds:-0}
+ds=$("$PMSET" -g | awk '$1=="SleepDisabled"{print $2}'); ds=${ds:-0}
 
 stamp=$(date '+%Y-%m-%dT%H:%M:%S%z')
 h=$(date +%H); m=$(date +%M)
@@ -39,8 +40,8 @@ if [ "$on_batt" -eq 1 ] && [ "$batt_pct" != "?" ] && [ "$batt_pct" -lt 30 ]; the
 fi
 
 if [ "$now" -ge $((23*60 + 25)) ] && [ "$now" -le $((23*60 + 45)) ]; then
-  /usr/bin/pmset -a disablesleep 0 >> "$LOG" 2>&1
-  /usr/bin/pmset sleepnow          >> "$LOG" 2>&1
+  "$PMSET" -a disablesleep 0 >> "$LOG" 2>&1
+  "$PMSET" sleepnow          >> "$LOG" 2>&1
   exit 0
 fi
 
@@ -49,7 +50,7 @@ if [ "$now" -ge $((6*60 + 25)) ] && [ "$now" -le $((12*60)) ]; then
     printf '%s WARN sveglia a batteria (%s%%): ricollega l alimentatore, resta sveglia e consuma\n' \
       "$stamp" "$batt_pct" >> "$LOG" 2>&1
   fi
-  /usr/bin/pmset -a disablesleep 1 >> "$LOG" 2>&1
+  "$PMSET" -a disablesleep 1 >> "$LOG" 2>&1
   exit 0
 fi
 

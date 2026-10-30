@@ -5,7 +5,7 @@
 
 set -uo pipefail
 PROG="$(basename "$0")"
-LD=/Library/LaunchDaemons
+LD="${LAUNCHD_DIR:-/Library/LaunchDaemons}"   # override per i test
 LABEL=com.roberto.coffee.tick
 PLIST_DST="$LD/$LABEL.plist"
 diag() { printf '%s: %s\n' "$PROG" "$*" >&2; }
