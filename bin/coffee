@@ -1,0 +1,103 @@
+#!/bin/bash
+# coffee — impedisce lo sleep e imposta la finestra notturna:
+#   23:30 suspend (tick launchd: disablesleep 0 + sleepnow)
+#   06:30 resume  (pmset repeat wake) + tick che rimette disablesleep 1
+#
+# Perché serve il tick: `disablesleep 1` blocca sia il sonno pianificato sia `sleepnow`
+# (errore 0xe00002e2). E perché serve `pmset repeat wake`: launchd da solo non sveglia
+# un Mac dormiente, esegue il job in ritardo al primo wake.
+#
+# Idempotente. Exit: 0 ok, 1 errore, 2 uso.
+
+set -uo pipefail
+PROG="$(basename "$0")"
+# derivato dalla posizione dello script: sotto sudo $HOME diventa /var/root
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LD=/Library/LaunchDaemons
+LABEL=com.roberto.coffee.tick
+PLIST_SRC="$ROOT/daemon/$LABEL.plist.in"
+PLIST_DST="$LD/$LABEL.plist"
+diag() { printf '%s: %s\n' "$PROG" "$*" >&2; }
+
+repeating_raw() {
+  pmset -g sched | awk '
+    /^Repeating power events:/ { f=1; next }
+    f && /^[A-Za-z].*:/        { f=0 }
+    f && NF                   { print }
+  '
+}
+sleep_disabled() { pmset -g | grep -Eq 'SleepDisabled[[:space:]]+1'; }
+wake_armed() {
+  local r; r="$(repeating_raw)"
+  [ -n "$r" ] || return 1
+  printf '%s\n' "$r" | grep -Eqi 'wake.*(6:30 ?am|06:30)'
+}
+job_loaded() { launchctl print "system/$LABEL" >/dev/null 2>&1; }
+
+usage() {
+  cat <<'EOF'
+Uso: coffee
+
+  Impedisce lo sleep (disablesleep 1) e imposta:
+    23:30  suspend  (il tick di launchd toglie disablesleep e dorme)
+    06:30  resume   (wake RTC) + disablesleep 1 ripristinato subito dopo
+
+  Fuga manuale:
+    sudo pmset -a disablesleep 0 && sudo pmset repeat cancel
+    sudo launchctl bootout system/com.roberto.coffee.tick
+EOF
+  exit 0
+}
+
+case "${1:-}" in
+  -h|--help) usage ;;
+  "") ;;
+  *) diag "argomento non riconosciuto: $1"; exit 2 ;;
+esac
+
+[ -f "$PLIST_SRC" ] || { diag "manca $PLIST_SRC"; exit 1; }
+
+# non sovrascrivere eventi ripetuti di altri (ne esiste una sola coppia)
+if [ -n "$(repeating_raw)" ] && ! wake_armed; then
+  diag "eventi ripetuti già presenti e non sono il wake 06:30 di coffee: non li sovrascrivo."
+  repeating_raw | sed 's/^/  /' >&2
+  diag "rimuovili a mano se vuoi: sudo pmset repeat cancel"
+  exit 1
+fi
+
+# 1) resta sveglio (idempotente)
+sudo pmset -a disablesleep 1 || { diag "pmset -a disablesleep 1 è fallito"; exit 1; }
+
+# 2) sveglia RTC delle 06:30: è l'unica cosa che sveglia davvero la macchina
+sudo pmset repeat wake MTWRFSU 06:30:00 \
+  || { diag "pmset repeat wake è fallito"; exit 1; }
+
+# 3) tick di launchd (23:30 dorme, 06:30/06:45 riabilitano disablesleep)
+#    migrazione: rimuove l'eventuale job della vecchia installazione (com.roberto.caffeine.tick)
+if [ -f "$LD/com.roberto.caffeine.tick.plist" ]; then
+  sudo launchctl bootout system/com.roberto.caffeine.tick >/dev/null 2>&1 || true
+  sudo rm -f "$LD/com.roberto.caffeine.tick.plist"
+fi
+if job_loaded; then sudo launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true; fi
+# il plist è un template: i percorsi assoluti vanno resi concreti all'installazione
+rendered=$(mktemp -t coffee-plist) || { diag "mktemp fallito"; exit 1; }
+trap 'rm -f "$rendered"' EXIT
+sed "s|@ROOT@|$ROOT|g" "$PLIST_SRC" > "$rendered" || { diag "rendering del plist fallito"; exit 1; }
+/usr/bin/plutil -lint "$rendered" >/dev/null || { diag "plist non valido dopo il rendering"; exit 1; }
+sudo install -m 0644 -o root -g wheel "$rendered" "$PLIST_DST" \
+  || { diag "install del plist è fallito"; exit 1; }
+sudo launchctl bootstrap system "$PLIST_DST" \
+  || { diag "launchctl bootstrap è fallito"; exit 1; }
+
+# 4) verifica l'effetto, non il rc
+ok=0
+sleep_disabled || { diag "disablesleep non risulta attivo"; ok=1; }
+wake_armed     || { diag "il wake 06:30 non risulta pianificato"; ok=1; }
+job_loaded     || { diag "il tick di launchd non risulta caricato"; ok=1; }
+
+if [ "$ok" -ne 0 ]; then
+  diag "fuga manuale: sudo pmset -a disablesleep 0 && sudo pmset repeat cancel"
+  exit 1
+fi
+
+printf 'coffee: ok — sleep impedito, suspend 23:30, resume 06:30 (+ disablesleep 1 dopo)\n'

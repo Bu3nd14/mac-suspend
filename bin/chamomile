@@ -1,0 +1,81 @@
+#!/bin/bash
+# chamomile — consente lo sleep e rimuove tutto quello che ha messo coffee:
+# tick di launchd, wake RTC ripetuto, disablesleep.
+# Idempotente. Exit: 0 ok, 1 errore, 2 uso.
+
+set -uo pipefail
+PROG="$(basename "$0")"
+LD=/Library/LaunchDaemons
+LABEL=com.roberto.coffee.tick
+PLIST_DST="$LD/$LABEL.plist"
+diag() { printf '%s: %s\n' "$PROG" "$*" >&2; }
+
+repeating_raw() {
+  pmset -g sched | awk '
+    /^Repeating power events:/ { f=1; next }
+    f && /^[A-Za-z].*:/        { f=0 }
+    f && NF                   { print }
+  '
+}
+sleep_disabled() { pmset -g | grep -Eq 'SleepDisabled[[:space:]]+1'; }
+job_present() { [ -f "$PLIST_DST" ]; }
+
+usage() {
+  cat <<'EOF'
+Uso: chamomile [--force]
+
+  Consente lo sleep (disablesleep 0) e rimuove i timer di coffee:
+  il tick di launchd e il wake ripetuto delle 06:30.
+
+  --force  cancella anche eventi ripetuti NON creati da coffee.
+           Gli allarmi one-shot com.apple.alarm.* non vengono mai toccati.
+EOF
+  exit 0
+}
+
+FORCE=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage ;;
+    --force)   FORCE=1 ;;
+    *)         diag "argomento non riconosciuto: $1"; exit 2 ;;
+  esac
+  shift
+done
+
+# 1) PRIMA ridà lo sleep: è la via di fuga, non deve dipendere dal resto
+sudo pmset -a disablesleep 0 || { diag "pmset -a disablesleep 0 è fallito"; exit 1; }
+
+# 2) togli il tick di launchd (e l'eventuale job della vecchia installazione)
+if [ -f "$LD/com.roberto.caffeine.tick.plist" ]; then
+  sudo launchctl bootout system/com.roberto.caffeine.tick >/dev/null 2>&1 || true
+  sudo rm -f "$LD/com.roberto.caffeine.tick.plist"
+fi
+if job_present; then
+  sudo launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
+  sudo rm -f "$PLIST_DST" || { diag "rimozione del plist fallita: $PLIST_DST"; exit 1; }
+fi
+
+# 3) togli i timer ripetuti (solo i nostri, salvo --force)
+foreign=0
+if [ -n "$(repeating_raw)" ]; then
+  if [ "$FORCE" -eq 0 ] && ! repeating_raw | grep -Eqi 'wake.*(6:30 ?am|06:30)'; then
+    diag "eventi ripetuti presenti ma non sono quelli di coffee: non li cancello."
+    repeating_raw | sed 's/^/  /' >&2
+    diag "usa --force per rimuoverli comunque"
+    foreign=1
+  else
+    sudo pmset repeat cancel || { diag "pmset repeat cancel è fallito"; exit 1; }
+  fi
+fi
+
+# 4) verifica l'effetto, non il rc
+ok=0
+if sleep_disabled; then diag "disablesleep risulta ancora attivo"; ok=1; fi
+[ "$foreign" -eq 0 ] && job_present && { diag "il tick di launchd è ancora installato"; ok=1; }
+[ "$foreign" -eq 0 ] && [ -n "$(repeating_raw)" ] && { diag "restano eventi ripetuti"; repeating_raw | sed 's/^/  /' >&2; ok=1; }
+
+[ "$foreign" -ne 0 ] && exit 1
+[ "$ok" -ne 0 ] && exit 1
+
+printf 'chamomile: ok — sleep consentito, tick e timer rimossi\n'

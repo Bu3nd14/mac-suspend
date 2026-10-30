@@ -1,0 +1,57 @@
+#!/bin/bash
+# coffee-tick — eseguito da launchd agli orari del plist.
+# Decide cosa fare in base all'ora corrente, con finestre di guardia:
+# un job calendario perso viene rieseguito al risveglio, quindi senza guardia
+# alle 23:30 rischierebbe di addormentare la macchina a mezzogiorno.
+#
+#   23:25-23:45  → disablesleep 0 + sleepnow   (notte: libera il sonno e dorme)
+#   06:25-12:00  → disablesleep 1              (mattino: torna sveglio e resta sveglio)
+#
+# Ogni esecuzione registra anche alimentazione e carica: di notte la macchina
+# spesso gira a batteria, e senza questo dato il mattino dopo non si capisce nulla.
+
+set -u
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # non $HOME: sotto sudo è /var/root
+LOG="$ROOT/logs/tick.log"
+mkdir -p "$ROOT/logs"
+
+# --- stato alimentazione (pmset -g batt, output non localizzato) ---
+batt_src=$(/usr/bin/pmset -g batt | sed -n "s/^Now drawing from '\(.*\)'\$/\1/p")
+batt_pct=$(/usr/bin/pmset -g batt | awk '/present: true/ {
+  for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+%;?$/) { gsub(/[%;]/, "", $i); print $i; exit } }')
+batt_src=${batt_src:-sconosciuta}
+batt_pct=${batt_pct:-?}
+ds=$(/usr/bin/pmset -g | awk '$1=="SleepDisabled"{print $2}'); ds=${ds:-0}
+
+stamp=$(date '+%Y-%m-%dT%H:%M:%S%z')
+h=$(date +%H); m=$(date +%M)
+now=$((10#$h * 60 + 10#$m))
+
+printf '%s tick %s:%s now=%s disablesleep=%s source=%s charge=%s%%\n' \
+  "$stamp" "$h" "$m" "$now" "$ds" "$batt_src" "$batt_pct" >> "$LOG" 2>&1
+
+on_batt=0
+[ "$batt_src" = "Battery Power" ] && on_batt=1
+
+if [ "$on_batt" -eq 1 ] && [ "$batt_pct" != "?" ] && [ "$batt_pct" -lt 30 ]; then
+  printf '%s WARN batteria al %s%% e non su AC: se la notte e lunga la macchina puo spegnersi\n' \
+    "$stamp" "$batt_pct" >> "$LOG" 2>&1
+fi
+
+if [ "$now" -ge $((23*60 + 25)) ] && [ "$now" -le $((23*60 + 45)) ]; then
+  /usr/bin/pmset -a disablesleep 0 >> "$LOG" 2>&1
+  /usr/bin/pmset sleepnow          >> "$LOG" 2>&1
+  exit 0
+fi
+
+if [ "$now" -ge $((6*60 + 25)) ] && [ "$now" -le $((12*60)) ]; then
+  if [ "$on_batt" -eq 1 ]; then
+    printf '%s WARN sveglia a batteria (%s%%): ricollega l alimentatore, resta sveglia e consuma\n' \
+      "$stamp" "$batt_pct" >> "$LOG" 2>&1
+  fi
+  /usr/bin/pmset -a disablesleep 1 >> "$LOG" 2>&1
+  exit 0
+fi
+
+# fuori finestra: nessuna azione (job recuperato in ritardo o tick di test)
+exit 0
