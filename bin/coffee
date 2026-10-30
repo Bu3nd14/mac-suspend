@@ -14,7 +14,7 @@ PROG="$(basename "$0")"
 # derived from the script location: under sudo $HOME becomes /var/root
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LD="${LAUNCHD_DIR:-/Library/LaunchDaemons}"   # override for tests
-LABEL=com.roberto.coffee.tick
+LABEL=local.coffee.tick
 PLIST_SRC="$ROOT/daemon/$LABEL.plist.in"
 PLIST_DST="$LD/$LABEL.plist"
 CONFIG="$ROOT/state/config"
@@ -92,7 +92,7 @@ Uso: coffee [--sleep HH:MM] [--wake HH:MM]
 
   Fuga manuale:
     sudo pmset -a disablesleep 0 && sudo pmset repeat cancel
-    sudo launchctl bootout system/com.roberto.coffee.tick
+    sudo launchctl bootout system/local.coffee.tick
 EOF
   exit 0
 }
@@ -141,11 +141,12 @@ sudo pmset repeat wake MTWRFSU "${WAKE}:00" \
   || { diag "pmset repeat wake è fallito"; exit 1; }
 
 # 3) launchd tick (sleeps at --sleep, restores disablesleep at --wake)
-#    migration: remove the job of any previous installation (com.roberto.caffeine.tick)
-if [ -f "$LD/com.roberto.caffeine.tick.plist" ]; then
-  sudo launchctl bootout system/com.roberto.caffeine.tick >/dev/null 2>&1 || true
-  sudo rm -f "$LD/com.roberto.caffeine.tick.plist"
-fi
+#    migration: remove the job of any previous installation (com.roberto.*.tick)
+for old in com.roberto.caffeine.tick com.roberto.coffee.tick; do
+  [ -f "$LD/$old.plist" ] || continue
+  sudo launchctl bootout "system/$old" >/dev/null 2>&1 || true
+  sudo rm -f "$LD/$old.plist"
+done
 if job_loaded; then sudo launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true; fi
 
 # the plist is a template: absolute paths and times are rendered at install time

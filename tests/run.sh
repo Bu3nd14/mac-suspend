@@ -104,7 +104,7 @@ EOS
   export PATH="$BIN:$PATH" LAUNCHD_DIR="$LD" FAKE_STATE="$ST" PMSET_BIN="$BIN/pmset"
   unset FAKE_LIE FAKE_HHMM FAKE_POWER FAKE_CHARGE
   COFFEE="$ROOT/bin/coffee"; CHAMOMILE="$ROOT/bin/chamomile"; TICK="$ROOT/daemon/coffee-tick"
-  PLIST="$LD/com.roberto.coffee.tick.plist"
+  PLIST="$LD/local.coffee.tick.plist"
 }
 
 plist_int() { /usr/libexec/PlistBuddy -c "Print :StartCalendarInterval:$1:$2" "$PLIST" 2>/dev/null; }
@@ -188,6 +188,16 @@ done
 setup
 "$COFFEE" --sleep 22:00 --wake 06:00 --bogus >/dev/null 2>&1
 check "unknown argument exit 2"      2 "$?"
+
+# migration from the two previous labels (one contains a user name)
+for old in com.roberto.caffeine.tick com.roberto.coffee.tick; do
+  setup
+  echo "<plist/>" > "$LD/$old.plist"
+  touch "$ST/job"
+  "$COFFEE" >/dev/null 2>&1
+  check "migration removes $old"     no "$([ -f "$LD/$old.plist" ] && echo yes || echo no)"
+  check "  …and installs local.coffee.tick" yes "$([ -f "$PLIST" ] && echo yes || echo no)"
+done
 
 # ---------------------------------------------------------------- chamomile
 echo "chamomile"

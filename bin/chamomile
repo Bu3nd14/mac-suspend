@@ -7,7 +7,7 @@ set -uo pipefail
 PROG="$(basename "$0")"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LD="${LAUNCHD_DIR:-/Library/LaunchDaemons}"   # override per i test
-LABEL=com.roberto.coffee.tick
+LABEL=local.coffee.tick
 PLIST_DST="$LD/$LABEL.plist"
 CONFIG="$ROOT/state/config"
 diag() { printf '%s: %s\n' "$PROG" "$*" >&2; }
@@ -70,10 +70,11 @@ done
 sudo pmset -a disablesleep 0 || { diag "pmset -a disablesleep 0 è fallito"; exit 1; }
 
 # 2) remove the launchd tick (and the job of any previous installation)
-if [ -f "$LD/com.roberto.caffeine.tick.plist" ]; then
-  sudo launchctl bootout system/com.roberto.caffeine.tick >/dev/null 2>&1 || true
-  sudo rm -f "$LD/com.roberto.caffeine.tick.plist"
-fi
+for old in com.roberto.caffeine.tick com.roberto.coffee.tick; do
+  [ -f "$LD/$old.plist" ] || continue
+  sudo launchctl bootout "system/$old" >/dev/null 2>&1 || true
+  sudo rm -f "$LD/$old.plist"
+done
 if job_present; then
   sudo launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
   sudo rm -f "$PLIST_DST" || { diag "rimozione del plist fallita: $PLIST_DST"; exit 1; }

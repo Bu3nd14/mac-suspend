@@ -65,7 +65,7 @@ cd ~/mac-suspend
 
 1. `pmset -a disablesleep 1` — the machine will not sleep (not even with the lid closed);
 2. `pmset repeat wake MTWRFSU 06:30:00` — the actual wake-up;
-3. installs the LaunchDaemon `com.roberto.coffee.tick` into `/Library/LaunchDaemons`
+3. installs the LaunchDaemon `local.coffee.tick` into `/Library/LaunchDaemons`
    (schedules live in the plist; absolute paths are rendered at install time);
 4. **verifies the resulting state**, not `pmset`'s exit code — run as non-root, `pmset`
    prints "must be run as root" and still returns `0`.
@@ -97,7 +97,7 @@ sleep **immediately**. Run it locally, not over SSH.
 
 ```bash
 # what is armed
-launchctl print system/com.roberto.coffee.tick >/dev/null && echo "tick loaded"
+launchctl print system/local.coffee.tick >/dev/null && echo "tick loaded"
 pmset -g sched | sed -n '/Repeating/,$p'      # expect: wake at 6:30AM every day
 pmset -g | grep SleepDisabled                  # 1 = keep awake
 
@@ -135,7 +135,7 @@ path, so a Linux runner would not exercise the same code).
 bin/coffee                                  the command
 bin/chamomile                               the reverse command
 daemon/coffee-tick                          run by launchd, with the time windows
-daemon/com.roberto.coffee.tick.plist.in     LaunchDaemon template (@ROOT@ → real path)
+daemon/local.coffee.tick.plist.in      LaunchDaemon template (@ROOT@ → real path)
 logs/                                       tick log (git-ignored)
 tests/                                      test suite with fakes (no sudo)
 ```
@@ -181,14 +181,13 @@ Manual escape hatch, always available:
 ```bash
 sudo pmset -a disablesleep 0
 sudo pmset repeat cancel
-sudo launchctl bootout system/com.roberto.coffee.tick
+sudo launchctl bootout system/local.coffee.tick
 ```
 
 ## Limitations
 
 - The 60-minute minimum between `--sleep` and `--wake` is a sanity check, not a rule of
   the system: shorter cycles are refused on purpose.
-- The label `com.roberto.coffee.tick` contains a user name: rename it if you mind.
 - The resume is a single RTC `wake` event: it cannot power on a machine that is off.
 - Tested on a single model (MacBook Air M5, macOS 26.7.1). The behaviour of
   `disablesleep` and of launchd jobs may change across macOS releases.

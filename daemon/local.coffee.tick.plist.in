@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.roberto.coffee.tick</string>
+  <string>local.coffee.tick</string>
 
   <!-- The two times are passed as arguments, so the tick derives its guard windows
        from them instead of hardcoding them here. -->
