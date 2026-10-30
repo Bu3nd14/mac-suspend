@@ -1,17 +1,17 @@
 #!/bin/bash
-# coffee — impedisce lo sleep e imposta la finestra notturna:
-#   23:30 suspend (tick launchd: disablesleep 0 + sleepnow)
-#   06:30 resume  (pmset repeat wake) + tick che rimette disablesleep 1
+# coffee — prevents sleep and sets up the nightly window:
+#   23:30 suspend (launchd tick: disablesleep 0 + sleepnow)
+#   06:30 resume  (pmset repeat wake) + tick that sets disablesleep 1 back
 #
-# Perché serve il tick: `disablesleep 1` blocca sia il sonno pianificato sia `sleepnow`
-# (errore 0xe00002e2). E perché serve `pmset repeat wake`: launchd da solo non sveglia
-# un Mac dormiente, esegue il job in ritardo al primo wake.
+# Why a tick is needed: `disablesleep 1` blocks both scheduled sleep and `sleepnow`
+# (error 0xe00002e2). Why `pmset repeat wake` is needed: launchd alone does not wake
+# a sleeping Mac, it only runs the job late at the next wake.
 #
-# Idempotente. Exit: 0 ok, 1 errore, 2 uso.
+# Idempotent. Exit: 0 ok, 1 error, 2 usage.
 
 set -uo pipefail
 PROG="$(basename "$0")"
-# derivato dalla posizione dello script: sotto sudo $HOME diventa /var/root
+# derived from the script location: under sudo $HOME becomes /var/root
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LD=/Library/LaunchDaemons
 LABEL=com.roberto.coffee.tick
@@ -57,7 +57,7 @@ esac
 
 [ -f "$PLIST_SRC" ] || { diag "manca $PLIST_SRC"; exit 1; }
 
-# non sovrascrivere eventi ripetuti di altri (ne esiste una sola coppia)
+# do not overwrite somebody else's repeating events (only one pair exists)
 if [ -n "$(repeating_raw)" ] && ! wake_armed; then
   diag "eventi ripetuti già presenti e non sono il wake 06:30 di coffee: non li sovrascrivo."
   repeating_raw | sed 's/^/  /' >&2
@@ -65,21 +65,21 @@ if [ -n "$(repeating_raw)" ] && ! wake_armed; then
   exit 1
 fi
 
-# 1) resta sveglio (idempotente)
+# 1) stay awake (idempotent)
 sudo pmset -a disablesleep 1 || { diag "pmset -a disablesleep 1 è fallito"; exit 1; }
 
-# 2) sveglia RTC delle 06:30: è l'unica cosa che sveglia davvero la macchina
+# 2) 06:30 RTC wake: the only thing that actually wakes the machine
 sudo pmset repeat wake MTWRFSU 06:30:00 \
   || { diag "pmset repeat wake è fallito"; exit 1; }
 
-# 3) tick di launchd (23:30 dorme, 06:30/06:45 riabilitano disablesleep)
-#    migrazione: rimuove l'eventuale job della vecchia installazione (com.roberto.caffeine.tick)
+# 3) launchd tick (23:30 sleeps, 06:30/06:45 restore disablesleep)
+#    migration: remove the job of any previous installation (com.roberto.caffeine.tick)
 if [ -f "$LD/com.roberto.caffeine.tick.plist" ]; then
   sudo launchctl bootout system/com.roberto.caffeine.tick >/dev/null 2>&1 || true
   sudo rm -f "$LD/com.roberto.caffeine.tick.plist"
 fi
 if job_loaded; then sudo launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true; fi
-# il plist è un template: i percorsi assoluti vanno resi concreti all'installazione
+# the plist is a template: absolute paths are rendered at install time
 rendered=$(mktemp -t coffee-plist) || { diag "mktemp fallito"; exit 1; }
 trap 'rm -f "$rendered"' EXIT
 sed "s|@ROOT@|$ROOT|g" "$PLIST_SRC" > "$rendered" || { diag "rendering del plist fallito"; exit 1; }
@@ -89,7 +89,7 @@ sudo install -m 0644 -o root -g wheel "$rendered" "$PLIST_DST" \
 sudo launchctl bootstrap system "$PLIST_DST" \
   || { diag "launchctl bootstrap è fallito"; exit 1; }
 
-# 4) verifica l'effetto, non il rc
+# 4) verify the effect, not the exit code
 ok=0
 sleep_disabled || { diag "disablesleep non risulta attivo"; ok=1; }
 wake_armed     || { diag "il wake 06:30 non risulta pianificato"; ok=1; }

@@ -11,8 +11,8 @@
     <string>@ROOT@/daemon/coffee-tick</string>
   </array>
 
-  <!-- 23:30 libera il sonno e dorme; 06:30 e 06:45 lo riabilitano.
-       06:45 è la seconda occasione se alle 06:30 il job non è partito. -->
+  <!-- 23:30 releases sleep and sleeps; 06:30 and 06:45 restore it.
+       06:45 is the second chance if the 06:30 job did not run. -->
   <key>StartCalendarInterval</key>
   <array>
     <dict><key>Hour</key><integer>23</integer><key>Minute</key><integer>30</integer></dict>

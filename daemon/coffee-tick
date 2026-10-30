@@ -1,25 +1,25 @@
 #!/bin/bash
-# coffee-tick — eseguito da launchd agli orari del plist.
-# Decide cosa fare in base all'ora corrente, con finestre di guardia:
-# un job calendario perso viene rieseguito al risveglio, quindi senza guardia
-# alle 23:30 rischierebbe di addormentare la macchina a mezzogiorno.
+# coffee-tick — run by launchd at the times in the plist.
+# It decides what to do from the current time, inside guard windows:
+# a missed calendar job is re-run at the next wake, so without a window
+# a tick missed at 23:30 could put the machine to sleep at noon.
 #
-#   23:25-23:45  → disablesleep 0 + sleepnow   (notte: libera il sonno e dorme)
-#   06:25-12:00  → disablesleep 1              (mattino: torna sveglio e resta sveglio)
+#   23:25-23:45  → disablesleep 0 + sleepnow   (night: allow sleep, then sleep)
+#   06:25-12:00  → disablesleep 1              (morning: wake up and stay awake)
 #
-# Ogni esecuzione registra anche alimentazione e carica: di notte la macchina
-# spesso gira a batteria, e senza questo dato il mattino dopo non si capisce nulla.
+# Every run also records power source and charge: at night the machine is often
+# on battery, and without that datum the morning after is unreadable.
 
 set -u
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # non $HOME: sotto sudo è /var/root
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # not $HOME: under sudo it is /var/root
 LOG="$ROOT/logs/tick.log"
 mkdir -p "$ROOT/logs"
 
-# --- stato alimentazione (pmset -g batt, output non localizzato) ---
+# --- power state (pmset -g batt, output is not localised) ---
 batt_src=$(/usr/bin/pmset -g batt | sed -n "s/^Now drawing from '\(.*\)'\$/\1/p")
 batt_pct=$(/usr/bin/pmset -g batt | awk '/present: true/ {
   for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+%;?$/) { gsub(/[%;]/, "", $i); print $i; exit } }')
-batt_src=${batt_src:-sconosciuta}
+batt_src=${batt_src:-unknown}
 batt_pct=${batt_pct:-?}
 ds=$(/usr/bin/pmset -g | awk '$1=="SleepDisabled"{print $2}'); ds=${ds:-0}
 
@@ -53,5 +53,5 @@ if [ "$now" -ge $((6*60 + 25)) ] && [ "$now" -le $((12*60)) ]; then
   exit 0
 fi
 
-# fuori finestra: nessuna azione (job recuperato in ritardo o tick di test)
+# outside any window: do nothing (late re-run of a missed job, or a test tick)
 exit 0

@@ -1,123 +1,123 @@
-# coffee / chamomile — suspend programmato su macOS
+# coffee / chamomile — scheduled suspend for macOS
 
-Due comandi per un Mac headless che deve stare **sveglio di giorno** e **dormire di notte**,
-svegliandosi da solo a un'ora prestabilita.
+Two commands for a headless Mac that must **stay awake during the day** and **sleep at
+night**, waking up on its own at a fixed time.
 
 ```
-coffee      → impedisce lo sleep, e pianifica: suspend 23:30 / resume 06:30
-chamomile   → ridà lo sleep e rimuove tutto quello che ha messo coffee
+coffee      → prevents sleep, and schedules: suspend 23:30 / resume 06:30
+chamomile   → restores sleep and removes everything coffee set up
 ```
 
-Pensato per un MacBook usato a **coperchio chiuso**, alimentato e raggiunto via SSH
-(in questo caso tramite un tunnel che gira in un container dentro colima).
+Built for a MacBook used with the **lid closed**, on power, reached over SSH
+(here through a tunnel running inside a container in colima).
 
-## Perché non basta `pmset repeat sleep`
+## Why `pmset repeat sleep` is not enough
 
-Verificato su macOS 26.7.1 (Apple Silicon), non per sentito dire:
+Verified on macOS 26.7.1 (Apple Silicon), not taken on faith:
 
-| prova | esito |
+| test | result |
 |---|---|
-| `pmset -a disablesleep 1` + `pmset repeat sleep 23:30` | il sonno **non avviene** |
+| `pmset -a disablesleep 1` + `pmset repeat sleep 23:30` | the machine **does not sleep** |
 | `pmset -a disablesleep 1` + `pmset sleepnow` | `Unable to sleep system: error 0xe00002e2` (not permitted) |
-| job launchd `StartCalendarInterval` su Mac dormiente | **non la sveglia**: il job parte al primo wake, in ritardo |
-| `pmset repeat wake 06:30` | **sveglia** puntualmente (evento RTC) |
+| launchd `StartCalendarInterval` job while the Mac is asleep | **does not wake it**: the job runs at the next wake, late |
+| `pmset repeat wake 06:30` | **wakes it** on time (RTC event) |
 
-Quindi `disablesleep` va tolto prima di dormire, e la sveglia deve essere un evento RTC.
-Il sonno delle 23:30 non può essere un evento `pmset`: lo chiede un job di launchd
-(che gira come root, senza tty) con `disablesleep 0` seguito da `sleepnow`.
+So `disablesleep` has to be cleared before sleeping, and the wake must be an RTC event.
+The 23:30 sleep cannot be a `pmset` event at all: it is requested by a launchd job
+(running as root, with no tty) via `disablesleep 0` followed by `sleepnow`.
 
-## Come funziona
+## How it works
 
 ```
-23:30  launchd  →  pmset -a disablesleep 0 ; pmset sleepnow     la macchina dorme
-06:30  RTC      →  pmset repeat wake                            la macchina si sveglia
-06:30  launchd  →  pmset -a disablesleep 1                      resta sveglia
-06:45  launchd  →  pmset -a disablesleep 1                      seconda occasione
+23:30  launchd  →  pmset -a disablesleep 0 ; pmset sleepnow     the machine sleeps
+06:30  RTC      →  pmset repeat wake                            the machine wakes
+06:30  launchd  →  pmset -a disablesleep 1                      it stays awake
+06:45  launchd  →  pmset -a disablesleep 1                      second chance
 ```
 
-I job di launchd hanno **finestre di guardia** (23:25–23:45, 06:25–12:00): launchd riesegue
-i job mancati al risveglio, quindi senza guardia un tick delle 23:30 perso potrebbe
-addormentare la macchina a mezzogiorno.
+The launchd jobs are wrapped in **time windows** (23:25–23:45, 06:25–12:00): launchd
+re-runs missed jobs at the next wake, so without a window a tick missed at 23:30 could
+put the machine to sleep at noon the next day.
 
-## Installazione
+## Installation
 
-Nessuna dipendenza: solo bash e `pmset` (già presenti su macOS).
+No dependencies: bash and `pmset` only (both ship with macOS).
 
 ```bash
-git clone <questo-repo> ~/mac-suspend
+git clone <this-repo> ~/mac-suspend
 cd ~/mac-suspend
-./bin/coffee            # chiede la password di sudo
+./bin/coffee            # asks for your sudo password
 ```
 
-`coffee` fa, in ordine:
+`coffee` does, in order:
 
-1. `pmset -a disablesleep 1` — la macchina non dorme (nemmeno a coperchio chiuso);
-2. `pmset repeat wake MTWRFSU 06:30:00` — la sveglia vera;
-3. installa il LaunchDaemon `com.roberto.coffee.tick` in `/Library/LaunchDaemons`
-   (gli orari sono nel plist, i percorsi assoluti vengono resi concreti all'installazione);
-4. **verifica lo stato finale**, non il codice di uscita di `pmset` (che da non-root
-   stampa "must be run as root" e ritorna `0`).
+1. `pmset -a disablesleep 1` — the machine will not sleep (not even with the lid closed);
+2. `pmset repeat wake MTWRFSU 06:30:00` — the actual wake-up;
+3. installs the LaunchDaemon `com.roberto.coffee.tick` into `/Library/LaunchDaemons`
+   (schedules live in the plist; absolute paths are rendered at install time);
+4. **verifies the resulting state**, not `pmset`'s exit code — run as non-root, `pmset`
+   prints "must be run as root" and still returns `0`.
 
-Se qualcosa non torna, esce con errore e non lascia lo stato a metà.
+If anything does not hold, it exits with an error instead of leaving half a state behind.
 
-## Uso quotidiano
+## Daily use
 
 ```bash
-coffee        # arma tutto (idempotente)
-chamomile     # disarma tutto e ridà lo sleep (idempotente)
+coffee        # arm everything (idempotent)
+chamomile     # disarm everything and give sleep back (idempotent)
 ```
 
-Attenzione: `chamomile` rimette `disablesleep 0`, quindi con il coperchio chiuso la
-macchina dorme **subito**. Lancialo in locale, non via SSH.
+Careful: `chamomile` sets `disablesleep 0`, so with the lid closed the machine goes to
+sleep **immediately**. Run it locally, not over SSH.
 
-## Verifica
+## Verifying
 
 ```bash
-# cosa è armato
-launchctl print system/com.roberto.coffee.tick >/dev/null && echo "tick caricato"
-pmset -g sched | sed -n '/Repeating/,$p'      # deve comparire wake at 6:30AM every day
-pmset -g | grep SleepDisabled                  # 1 = sveglia
+# what is armed
+launchctl print system/com.roberto.coffee.tick >/dev/null && echo "tick loaded"
+pmset -g sched | sed -n '/Repeating/,$p'      # expect: wake at 6:30AM every day
+pmset -g | grep SleepDisabled                  # 1 = keep awake
 
-# cosa è successo stanotte
+# what happened last night
 grep -E "tick 23:30|tick 6:30|WARN" ~/mac-suspend/logs/tick.log
 pmset -g log | awk '$4=="Sleep" || ($4=="Wake" && $5!="Requests")' | tail -6
 ```
 
-Il tick scrive una riga per ogni esecuzione, con alimentazione e carica:
+The tick logs one line per run, including power source and charge:
 
 ```
 2026-10-30T23:30:05+0100 tick 23:30 now=1410 disablesleep=1 source=Battery Power charge=68%
 Sleeping now...
 ```
 
-## Problemi noti (tutti verificati sul campo)
+## Known issues (all observed in practice)
 
-| sintomo | causa | rimedio |
+| symptom | cause | fix |
 |---|---|---|
-| alle 23:30 non dorme, nel log `Sleeping now...` ma nessun `Sleep` nel log di sistema | una **sessione SSH aperta**: `ttyskeepawake` + assertion `ttyassertion` degradano il sonno a *dark wake* | non essere collegato a quell'ora, oppure `sudo pmset -a ttyskeepawake 0` |
-| non dorme e `pmset -g` dice `sleep prevented by …` | un'assertion (tipicamente `coreaudiod`: video o musica in riproduzione) | chiudere l'app; il tick lo registra nel log |
-| si sveglia in *DarkWake*, non FullWake | normale con coperchio chiuso: CPU e rete attive, display spento | è quello che serve a un headless; verifica che l'SSH risponda |
-| la notte consuma batteria | `MagSafe` non collegato: il log lo dice (`source=Battery Power`) | ricollegare; sotto il 30% il tick scrive un `WARN` |
-| dopo un riavvio non è raggiungibile | **FileVault**: la macchina resta al login finché qualcuno non entra | nessuna soluzione lato software: tenere presente il rischio |
+| at 23:30 it does not sleep; the log shows `Sleeping now...` but no `Sleep` in the system log | an **open SSH session**: `ttyskeepawake` plus the `ttyassertion` downgrade the sleep to *dark wake* | do not be connected at that time, or `sudo pmset -a ttyskeepawake 0` |
+| it does not sleep and `pmset -g` says `sleep prevented by …` | an assertion (typically `coreaudiod`: video or music playing) | close the app; the tick records it in the log |
+| it wakes into *DarkWake*, not FullWake | normal with the lid closed: CPU and network up, display off | that is what a headless machine needs; just check SSH answers |
+| the night drains the battery | charger not connected: the log says `source=Battery Power` | plug it in; below 30% the tick writes a `WARN` |
+| after a reboot it is unreachable | **FileVault**: the machine waits at the login screen until someone logs in | no software fix: know the risk |
 
-## Struttura
+## Layout
 
 ```
-bin/coffee                                  il comando
-bin/chamomile                               il comando inverso
-daemon/coffee-tick                          eseguito da launchd, con le finestre di guardia
-daemon/com.roberto.coffee.tick.plist.in     template del LaunchDaemon (@ROOT@ → percorso reale)
-logs/                                       log del tick (ignorato da git)
+bin/coffee                                  the command
+bin/chamomile                               the reverse command
+daemon/coffee-tick                          run by launchd, with the time windows
+daemon/com.roberto.coffee.tick.plist.in     LaunchDaemon template (@ROOT@ → real path)
+logs/                                       tick log (git-ignored)
 ```
 
-## Disinstallazione
+## Uninstall
 
 ```bash
-chamomile                                   # disarma e ridà lo sleep
-sudo rm -rf ~/mac-suspend                   # se non ti serve più
+chamomile                                   # disarm and give sleep back
+sudo rm -rf ~/mac-suspend                   # if you no longer need it
 ```
 
-Via di fuga manuale, sempre:
+Manual escape hatch, always available:
 
 ```bash
 sudo pmset -a disablesleep 0
@@ -125,11 +125,12 @@ sudo pmset repeat cancel
 sudo launchctl bootout system/com.roberto.coffee.tick
 ```
 
-## Limiti
+## Limitations
 
-- Gli orari sono **fissi nel plist**: per cambiarli si modifica
-  `daemon/com.roberto.coffee.tick.plist.in` e si rilancia `coffee`.
-- La label `com.roberto.coffee.tick` contiene un nome utente: cambiala se ti dà fastidio.
-- Il resume è un evento RTC singolo (`wake`): non riaccende una macchina spenta.
-- Testato su un solo modello (MacBook Air M5, macOS 26.7.1). Il comportamento di
-  `disablesleep` e dei job launchd può cambiare tra versioni di macOS.
+- The times are **hardcoded in the plist**: edit `daemon/com.roberto.coffee.tick.plist.in`
+  and re-run `coffee` to change them.
+- The label `com.roberto.coffee.tick` contains a user name: rename it if you mind.
+- The resume is a single RTC `wake` event: it cannot power on a machine that is off.
+- Tested on a single model (MacBook Air M5, macOS 26.7.1). The behaviour of
+  `disablesleep` and of launchd jobs may change across macOS releases.
+- Runtime messages printed by the scripts are in Italian; the code and this README are not.

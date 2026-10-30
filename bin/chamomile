@@ -1,7 +1,7 @@
 #!/bin/bash
-# chamomile — consente lo sleep e rimuove tutto quello che ha messo coffee:
-# tick di launchd, wake RTC ripetuto, disablesleep.
-# Idempotente. Exit: 0 ok, 1 errore, 2 uso.
+# chamomile — restores sleep and removes everything coffee set up:
+# launchd tick, repeating RTC wake, disablesleep.
+# Idempotent. Exit: 0 ok, 1 error, 2 usage.
 
 set -uo pipefail
 PROG="$(basename "$0")"
@@ -43,10 +43,10 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-# 1) PRIMA ridà lo sleep: è la via di fuga, non deve dipendere dal resto
+# 1) FIRST give sleep back: this is the escape hatch, it must not depend on the rest
 sudo pmset -a disablesleep 0 || { diag "pmset -a disablesleep 0 è fallito"; exit 1; }
 
-# 2) togli il tick di launchd (e l'eventuale job della vecchia installazione)
+# 2) remove the launchd tick (and the job of any previous installation)
 if [ -f "$LD/com.roberto.caffeine.tick.plist" ]; then
   sudo launchctl bootout system/com.roberto.caffeine.tick >/dev/null 2>&1 || true
   sudo rm -f "$LD/com.roberto.caffeine.tick.plist"
@@ -56,7 +56,7 @@ if job_present; then
   sudo rm -f "$PLIST_DST" || { diag "rimozione del plist fallita: $PLIST_DST"; exit 1; }
 fi
 
-# 3) togli i timer ripetuti (solo i nostri, salvo --force)
+# 3) remove the repeating timers (only ours, unless --force)
 foreign=0
 if [ -n "$(repeating_raw)" ]; then
   if [ "$FORCE" -eq 0 ] && ! repeating_raw | grep -Eqi 'wake.*(6:30 ?am|06:30)'; then
@@ -69,7 +69,7 @@ if [ -n "$(repeating_raw)" ]; then
   fi
 fi
 
-# 4) verifica l'effetto, non il rc
+# 4) verify the effect, not the exit code
 ok=0
 if sleep_disabled; then diag "disablesleep risulta ancora attivo"; ok=1; fi
 [ "$foreign" -eq 0 ] && job_present && { diag "il tick di launchd è ancora installato"; ok=1; }
