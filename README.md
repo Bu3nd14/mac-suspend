@@ -100,6 +100,12 @@ Sleeping now...
 | the night drains the battery | charger not connected: the log says `source=Battery Power` | plug it in; below 30% the tick writes a `WARN` |
 | after a reboot it is unreachable | **FileVault**: the machine waits at the login screen until someone logs in | no software fix: know the risk |
 
+## CI
+
+`.github/workflows/tests.yml` runs the suite on every pull request and on every push to
+`main`, on a `macos-latest` runner (macOS on purpose: `plutil` and BSD userland are in the
+path, so a Linux runner would not exercise the same code).
+
 ## Layout
 
 ```

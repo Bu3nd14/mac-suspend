@@ -1,0 +1,27 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    # macOS, not Linux: the scripts call plutil and rely on BSD userland.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          sw_vers
+          bash --version | head -1
+
+      - name: Syntax check
+        run: |
+          for f in bin/coffee bin/chamomile daemon/coffee-tick tests/run.sh; do
+            bash -n "$f" || exit 1
+          done
+
+      - name: Run test suite
+        run: ./tests/run.sh
